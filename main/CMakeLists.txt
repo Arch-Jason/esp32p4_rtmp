@@ -17,6 +17,20 @@ set(srcs "main.c"
         "libflv/mpeg4-avc.c"
         "libflv/mpeg4-annexbtomp4.c"
         "libflv/flv-header.c"
+        "librtmp/rtmp-client.c"
+        "librtmp/rtmp-internal.h"
+        "librtmp/rtmp-chunk-write.c"
+        "librtmp/rtmp-chunk-read.c"
+        "librtmp/rtmp-chunk-header.c"
+        "librtmp/rtmp-handshake.c"
+        "librtmp/rtmp-handler.c"
+        "librtmp/rtmp-invoke-handler.c"
+        "librtmp/rtmp-control-handler.c"
+        "librtmp/rtmp-control-message.c"
+        "librtmp/rtmp-netconnection.c"
+        "librtmp/rtmp-event.c"
+        "librtmp/rtmp-netstream.c"
+        "libflv/amf0.c"
 )
 
 idf_component_register(SRCS ${srcs}
@@ -31,4 +45,5 @@ idf_component_register(SRCS ${srcs}
                 esp_wifi
                 nvs_flash
                 esp_h264
+                esp_timer
 )

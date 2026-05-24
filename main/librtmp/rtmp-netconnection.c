@@ -1,5 +1,5 @@
 #include "rtmp-netconnection.h"
-#include "amf0.h"
+#include "../libflv/amf0.h"
 #include <stdlib.h>
 #include <string.h>
 

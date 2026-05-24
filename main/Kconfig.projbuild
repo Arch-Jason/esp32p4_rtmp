@@ -41,4 +41,22 @@ menu "Camera Configuration"
         default 3
         help
             Keep-alive probe packet retry count.
+
+    config RTMP_SERVER_HOST
+        string "RTMP server host"
+
+    config RTMP_SERVER_PORT
+        int "RTMP server port"
+        range 0 65535
+        default 1935
+
+    config RTMP_APP
+        string "App name"
+        help
+            the name before the slash
+
+    config RTMP_STREAM
+        string "Stream name"
+        help
+            the name after the slash
 endmenu

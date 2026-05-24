@@ -13,6 +13,7 @@
 #include <esp_h264_alloc.h>
 #include <esp_h264_enc_single_hw.h>
 #include <esp_ldo_regulator.h>
+#include <esp_timer.h>
 #include <example_sensor_init.h>
 #include <stdint.h>
 
@@ -173,7 +174,7 @@ void camera_init() {
         .i2c_sda_io_num = EXAMPLE_MIPI_CSI_CAM_SCCB_SDA_IO,
         .i2c_scl_io_num = EXAMPLE_MIPI_CSI_CAM_SCCB_SCL_IO,
         .port = ESP_CAM_SENSOR_MIPI_CSI,
-        .format_name = "MIPI_2lane_24Minput_RAW10_1920x1080_30fps",
+        .format_name = "MIPI_2lane_24Minput_RAW8_800x640_50fps",
     };
     example_sensor_init(&cam_sensor_config, &sensor_handle);
 
@@ -183,8 +184,8 @@ void camera_init() {
         .h_res = CONFIG_CAM_H,
         .v_res = CONFIG_CAM_V,
         .lane_bit_rate_mbps = EXAMPLE_MIPI_CSI_LANE_BITRATE_MBPS,
-        .input_data_color_type = CAM_CTLR_COLOR_RAW10,
-        .output_data_color_type = CAM_CTLR_COLOR_RAW10,
+        .input_data_color_type = CAM_CTLR_COLOR_RAW8,
+        .output_data_color_type = CAM_CTLR_COLOR_RAW8,
         .data_lane_num = 2,
         .byte_swap_en = false,
         .queue_items = 1,
@@ -212,7 +213,7 @@ void camera_init() {
     esp_isp_processor_cfg_t isp_config = {
         .clk_hz = 80 * 1000 * 1000,
         .input_data_source = ISP_INPUT_DATA_SOURCE_CSI,
-        .input_data_color_type = ISP_COLOR_RAW10,
+        .input_data_color_type = ISP_COLOR_RAW8,
         .output_data_color_type = ISP_COLOR_YUV420,
         .has_line_start_packet = false,
         .has_line_end_packet = false,
@@ -254,6 +255,9 @@ void get_h264_nalu(char** buf, size_t* len, uint32_t* dts, uint32_t* pts) {
     *buf = NULL;
     *len = 0;
 
+    // 记录推流开始时的系统时间（单位：毫秒）
+    static int64_t start_stream_time = 0;
+
     if (last_frames_received == frames_received) return;
 
     if (xSemaphoreTake(frame_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
@@ -270,6 +274,19 @@ void get_h264_nalu(char** buf, size_t* len, uint32_t* dts, uint32_t* pts) {
         if (ret == ESP_H264_ERR_OK) {
             *buf = (char*) enc_frame.raw_data.buffer;
             *len = enc_frame.length;
+
+            int64_t now_ms = esp_timer_get_time() / 1000; // 获取当前微秒并转为毫秒
+            
+            if (start_stream_time == 0) {
+                start_stream_time = now_ms; // 初始化第一帧的起点时间
+            }
+
+            // 计算当前帧相对于推流开始过去了多少毫秒
+            uint32_t relative_timestamp = (uint32_t)(now_ms - start_stream_time);
+
+            // H264 编码（无 B 帧的情况下）DTS 和 PTS 是完全相等的
+            *dts = relative_timestamp;
+            *pts = relative_timestamp;
 
             last_frames_received = frames_received;
         } else {

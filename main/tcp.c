@@ -1,139 +1,169 @@
 #include "tcp.h"
 #include "esp_log.h"
+#include "lwip/err.h"
+#include "lwip/sockets.h"
+#include "lwip/sys.h"
+#include "lwip/netdb.h"
 
-#define PORT CONFIG_PORT
-#define KEEPALIVE_IDLE CONFIG_KEEPALIVE_IDLE
-#define KEEPALIVE_INTERVAL CONFIG_KEEPALIVE_INTERVAL
-#define KEEPALIVE_COUNT CONFIG_KEEPALIVE_COUNT
+#include "libflv/flv-proto.h"
+#include "librtmp/rtmp-client.h"
 
-static const char* TAG = "TCP";
+#define RTMP_SERVER_HOST CONFIG_RTMP_SERVER_HOST
+#define RTMP_SERVER_PORT CONFIG_RTMP_SERVER_PORT 
+#define RTMP_APP         CONFIG_RTMP_APP
+#define RTMP_STREAM      CONFIG_RTMP_STREAM
 
-int sock = -1;
-volatile bool flv_header_sent;
+static const char* TAG = "RTMP_CLIENT";
+
+rtmp_client_t* g_rtmp = NULL;
+volatile bool rtmp_ready = false;
+int rtmp_sock = -1;
+
+static int rtmp_client_send(void* param, const void* header, size_t len, const void* data, size_t bytes) {
+    int socket_fd = *(int*)param;
+    if (socket_fd < 0) {
+        return -1;
+    }
+
+    // 1. 发送头部
+    if (len > 0) {
+        size_t sent = 0;
+        while (sent < len) {
+            int ret = send(socket_fd, (const char*)header + sent, len - sent, 0);
+            if (ret <= 0) {
+                ESP_LOGE(TAG, "Send header failed! ret=%d, errno=%d", ret, errno);
+                return -1;
+            }
+            sent += ret;
+        }
+    }
+    // 2. 发送主体数据
+    if (bytes > 0) {
+        size_t sent = 0;
+        while (sent < bytes) {
+            int ret = send(socket_fd, (const char*)data + sent, bytes - sent, 0);
+            if (ret <= 0) {
+                ESP_LOGE(TAG, "Send data failed! ret=%d, errno=%d", ret, errno);
+                return -1;
+            }
+            sent += ret;
+        }
+    }
+    
+    return (int)(len + bytes);
+}
 
 void tcp_server_task(void* pvParameters) {
-    char addr_str[128];
-    int addr_family = (int) pvParameters;
-    int ip_protocol = 0;
-    int keepAlive = 1;
-    int keepIdle = KEEPALIVE_IDLE;
-    int keepInterval = KEEPALIVE_INTERVAL;
-    int keepCount = KEEPALIVE_COUNT;
-    struct sockaddr_storage dest_addr;
+    char rx_buffer[2048];
+    struct addrinfo hints;
+    struct addrinfo *res;
 
-    if (addr_family == AF_INET) {
-        struct sockaddr_in* dest_addr_ip4 = (struct sockaddr_in*) &dest_addr;
-        dest_addr_ip4->sin_addr.s_addr = htonl(INADDR_ANY);
-        dest_addr_ip4->sin_family = AF_INET;
-        dest_addr_ip4->sin_port = htons(PORT);
-        ip_protocol = IPPROTO_IP;
-    }
-
-    int listen_sock = socket(addr_family, SOCK_STREAM, ip_protocol);
-    if (listen_sock < 0) {
-        ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
-        vTaskDelete(NULL);
-        return;
-    }
-    int opt = 1;
-    setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    ESP_LOGI(TAG, "Socket created");
-
-    int err = bind(listen_sock, (struct sockaddr*) &dest_addr, sizeof(dest_addr));
-    if (err != 0) {
-        ESP_LOGE(TAG, "Socket unable to bind: errno %d", errno);
-        ESP_LOGE(TAG, "IPPROTO: %d", addr_family);
-        goto CLEAN_UP;
-    }
-    ESP_LOGI(TAG, "Socket bound, port %d", PORT);
-
-    err = listen(listen_sock, 1);
-    if (err != 0) {
-        ESP_LOGE(TAG, "Error occurred during listen: errno %d", errno);
-        goto CLEAN_UP;
-    }
+    // 将 handler 改为 static，确保其在数据段拥有永久合法的内存地址，防止指针失效
+    static struct rtmp_client_handler_t handler;
+    memset(&handler, 0, sizeof(handler));
+    handler.send = rtmp_client_send;
 
     while (1) {
-        ESP_LOGI(TAG, "Socket listening");
+        rtmp_ready = false;
+        ESP_LOGI(TAG, "Resolving and connecting to RTMP Server: %s:%d", RTMP_SERVER_HOST, RTMP_SERVER_PORT);
 
-        struct sockaddr_storage source_addr;
-        socklen_t addr_len = sizeof(source_addr);
-        sock = accept(listen_sock, (struct sockaddr*) &source_addr, &addr_len);
-        if (sock < 0) {
-            ESP_LOGE(TAG, "Unable to accept connection: errno %d", errno);
-            break;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+
+        char port_str[6];
+        snprintf(port_str, sizeof(port_str), "%d", RTMP_SERVER_PORT);
+
+        int dns_err = getaddrinfo(RTMP_SERVER_HOST, port_str, &hints, &res);
+        if (dns_err != 0 || res == NULL) {
+            ESP_LOGE(TAG, "DNS lookup failed for %s, err=%d", RTMP_SERVER_HOST, dns_err);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
         }
 
-        // Set tcp keepalive option
-        setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(int));
-        setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &keepIdle, sizeof(int));
-        setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &keepInterval, sizeof(int));
-        setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keepCount, sizeof(int));
+        rtmp_sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (rtmp_sock < 0) {
+            ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
+            freeaddrinfo(res);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+
+        int err = connect(rtmp_sock, res->ai_addr, res->ai_addrlen);
+        freeaddrinfo(res);
+        
+        if (err != 0) {
+            ESP_LOGE(TAG, "Socket connect failed: errno %d", errno);
+            close(rtmp_sock);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+        ESP_LOGI(TAG, "TCP Connected! Starting RTMP Handshake...");
+
         int yes = 1;
-        setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-        // Convert ip address to string
-        if (source_addr.ss_family == PF_INET) {
-            inet_ntoa_r(((struct sockaddr_in*) &source_addr)->sin_addr,
-                        addr_str,
-                        sizeof(addr_str) - 1);
+        setsockopt(rtmp_sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
+        char tcurl[256];
+        snprintf(tcurl, sizeof(tcurl), "rtmp://%s/%s", RTMP_SERVER_HOST, RTMP_APP);
+
+        g_rtmp = rtmp_client_create(RTMP_APP, RTMP_STREAM, tcurl, &rtmp_sock, &handler);
+        if (!g_rtmp) {
+            ESP_LOGE(TAG, "Failed to create rtmp client instance");
+            close(rtmp_sock);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
         }
-        ESP_LOGI(TAG, "Socket accepted ip address: %s", addr_str);
 
-        flv_header_sent = false;
-        static const uint8_t flv_header[] = {'F',
-                                             'L',
-                                             'V',
-                                             0x01,
-                                             0x01, // video only
-                                             0x00,
-                                             0x00,
-                                             0x00,
-                                             0x09,
-                                             0x00,
-                                             0x00,
-                                             0x00,
-                                             0x00};
+        // 执行并捕获具体的错误返回值
+        int start_res = rtmp_client_start(g_rtmp, 0);
+        if (0 != start_res) {
+            ESP_LOGE(TAG, "Failed to start rtmp client, error code: %d", start_res);
+            rtmp_client_destroy(g_rtmp);
+            g_rtmp = NULL;
+            close(rtmp_sock);
+            rtmp_sock = -1;
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
 
-        tcp_tx((char*) flv_header, sizeof(flv_header));
-
-        flv_header_sent = true;
-
-        char rx_buffer[128];
+        // 网络事件轮询接收循环
         while (1) {
-            int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
-
+            int len = recv(rtmp_sock, rx_buffer, sizeof(rx_buffer), 0);
             if (len < 0) {
-                ESP_LOGE(TAG, "recv failed: errno %d", errno);
+                ESP_LOGE(TAG, "Recv failed: errno %d", errno);
                 break;
             } else if (len == 0) {
-                ESP_LOGI(TAG, "Connection closed by client");
+                ESP_LOGI(TAG, "Connection closed by server");
                 break;
+            }
+
+            int r = rtmp_client_input(g_rtmp, rx_buffer, len);
+            if (r != 0) {
+                ESP_LOGE(TAG, "rtmp_client_input error: %d", r);
+                break;
+            }
+
+            int state = rtmp_client_getstate(g_rtmp);
+            if (state == 4) { 
+                if (!rtmp_ready) {
+                    ESP_LOGI(TAG, "RTMP Handshake & Protocol complete! Ready to stream.");
+                    rtmp_ready = true;
+                }
             } else {
-                // 收到数据，进行处理
-                rx_buffer[len] = 0; // 确保字符串以 null 结尾
-                ESP_LOGI(TAG, "Received %d bytes: %s", len, rx_buffer);
+                rtmp_ready = false;
             }
         }
 
-        flv_header_sent = false;
-
-        sock = -1;
-        shutdown(sock, 0);
-        close(sock);
-    }
-
-CLEAN_UP:
-    close(listen_sock);
-    vTaskDelete(NULL);
-}
-
-void tcp_tx(char* buf, size_t len) {
-    int sent = 0;
-    while (sent < len) {
-        int ret = send(sock, buf + sent, len - sent, 0);
-        if (ret <= 0)
-            return;
-        sent += ret;
+        ESP_LOGW(TAG, "RTMP disconnected. Cleaning up and reconnecting...");
+        rtmp_ready = false;
+        if (g_rtmp) {
+            rtmp_client_destroy(g_rtmp);
+            g_rtmp = NULL;
+        }
+        close(rtmp_sock);
+        rtmp_sock = -1;
+        vTaskDelay(pdMS_TO_TICKS(2000)); 
     }
 }
+
+void tcp_tx(char* buf, size_t len) {}

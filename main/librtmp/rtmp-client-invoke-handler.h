@@ -1,5 +1,5 @@
 #include "rtmp-internal.h"
-#include "amf0.h"
+#include "../libflv/amf0.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
