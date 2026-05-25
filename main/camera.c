@@ -22,6 +22,8 @@ static const char* TAG = "Camera utils";
 volatile uint32_t frames_received = 0;
 volatile void* current_frame = NULL;
 SemaphoreHandle_t frame_mutex = NULL;
+volatile uint32_t dts, pts;
+
 
 /**
  * @brief Camera callback: Get new video buffer

@@ -1,4 +1,3 @@
-#include "tcp.h"
 #include "esp_log.h"
 #include "lwip/err.h"
 #include "lwip/sockets.h"
@@ -7,6 +6,7 @@
 
 #include "libflv/flv-proto.h"
 #include "librtmp/rtmp-client.h"
+#include "libflv/flv-muxer.h"
 
 #define RTMP_SERVER_HOST CONFIG_RTMP_SERVER_HOST
 #define RTMP_SERVER_PORT CONFIG_RTMP_SERVER_PORT 
@@ -19,7 +19,32 @@ rtmp_client_t* g_rtmp = NULL;
 volatile bool rtmp_ready = false;
 int rtmp_sock = -1;
 
-static int rtmp_client_send(void* param, const void* header, size_t len, const void* data, size_t bytes) {
+flv_muxer_t* flv_muxer;
+static struct rtmp_client_handler_t handler;
+
+static int on_flv_packet(void* flv, int type, const void* data, size_t bytes, uint32_t timestamp) {
+    // 如果 RTMP 还没有握手建立成功，直接丢弃帧，防止阻塞
+    if (!rtmp_ready || g_rtmp == NULL) {
+        return 0;
+    }
+
+    int r = 0;
+    if (type == FLV_TYPE_VIDEO) {
+        // 直接调用库函数将 FLV 视频负载推入 RTMP 管道
+        r = rtmp_client_push_video(g_rtmp, data, bytes, timestamp);
+    } else if (type == FLV_TYPE_AUDIO) {
+        r = rtmp_client_push_audio(g_rtmp, data, bytes, timestamp);
+    } else if (type == FLV_TYPE_SCRIPT) {
+        r = rtmp_client_push_script(g_rtmp, data, bytes, timestamp);
+    }
+
+    if (r != 0) {
+        ESP_LOGE(TAG, "RTMP push packet failed, error code: %d", r);
+    }
+    return r;
+}
+
+int rtmp_client_send(void* param, const void* header, size_t len, const void* data, size_t bytes) {
     int socket_fd = *(int*)param;
     if (socket_fd < 0) {
         return -1;
@@ -57,11 +82,6 @@ void tcp_server_task(void* pvParameters) {
     char rx_buffer[2048];
     struct addrinfo hints;
     struct addrinfo *res;
-
-    // 将 handler 改为 static，确保其在数据段拥有永久合法的内存地址，防止指针失效
-    static struct rtmp_client_handler_t handler;
-    memset(&handler, 0, sizeof(handler));
-    handler.send = rtmp_client_send;
 
     while (1) {
         rtmp_ready = false;
@@ -166,4 +186,8 @@ void tcp_server_task(void* pvParameters) {
     }
 }
 
-void tcp_tx(char* buf, size_t len) {}
+void rtmp_init() {
+    memset(&handler, 0, sizeof(handler));
+    handler.send = rtmp_client_send;
+    flv_muxer = flv_muxer_create(on_flv_packet, NULL);
+}
