@@ -464,7 +464,7 @@ bool i2s_mic_init(void) {
     if (aacEncoder_SetParam(aac_enc, AACENC_AOT, 2) != AACENC_OK
         || aacEncoder_SetParam(aac_enc, AACENC_SAMPLERATE, 11025) != AACENC_OK
         || aacEncoder_SetParam(aac_enc, AACENC_CHANNELMODE, 1) != AACENC_OK
-        || aacEncoder_SetParam(aac_enc, AACENC_BITRATE, 32000) != AACENC_OK
+        || aacEncoder_SetParam(aac_enc, AACENC_BITRATE, 24000) != AACENC_OK
         || aacEncoder_SetParam(aac_enc, AACENC_TRANSMUX, TT_MP4_ADTS) != AACENC_OK
         || aacEncoder_SetParam(aac_enc, AACENC_AFTERBURNER, 0) != AACENC_OK)
         return false;

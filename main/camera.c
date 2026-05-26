@@ -83,11 +83,11 @@ esp_h264_enc_out_frame_t enc_frame = {0};
 
 esp_h264_err_t h264_encoder_init() {
     esp_h264_enc_cfg_hw_t enc_cfg = {
-        .gop = 10,
-        .fps = 30,
+        .gop = 6,
+        .fps = 15,
         .res = {.width = CONFIG_CAM_H, .height = CONFIG_CAM_V},
         .rc = {
-            .bitrate = 3000000,
+            .bitrate = 1500000,
             .qp_min = 16,
             .qp_max = 36,
         },
@@ -176,7 +176,7 @@ void camera_init() {
         .i2c_sda_io_num = EXAMPLE_MIPI_CSI_CAM_SCCB_SDA_IO,
         .i2c_scl_io_num = EXAMPLE_MIPI_CSI_CAM_SCCB_SCL_IO,
         .port = ESP_CAM_SENSOR_MIPI_CSI,
-        .format_name = "MIPI_2lane_24Minput_RAW8_800x640_50fps",
+        .format_name = "MIPI_2lane_24Minput_RAW10_1920x1080_30fps",
     };
     example_sensor_init(&cam_sensor_config, &sensor_handle);
 
@@ -186,8 +186,8 @@ void camera_init() {
         .h_res = CONFIG_CAM_H,
         .v_res = CONFIG_CAM_V,
         .lane_bit_rate_mbps = EXAMPLE_MIPI_CSI_LANE_BITRATE_MBPS,
-        .input_data_color_type = CAM_CTLR_COLOR_RAW8,
-        .output_data_color_type = CAM_CTLR_COLOR_RAW8,
+        .input_data_color_type = CAM_CTLR_COLOR_RAW10,
+        .output_data_color_type = CAM_CTLR_COLOR_RAW10,
         .data_lane_num = 2,
         .byte_swap_en = false,
         .queue_items = 1,
@@ -215,7 +215,7 @@ void camera_init() {
     esp_isp_processor_cfg_t isp_config = {
         .clk_hz = 80 * 1000 * 1000,
         .input_data_source = ISP_INPUT_DATA_SOURCE_CSI,
-        .input_data_color_type = ISP_COLOR_RAW8,
+        .input_data_color_type = ISP_COLOR_RAW10,
         .output_data_color_type = ISP_COLOR_YUV420,
         .has_line_start_packet = false,
         .has_line_end_packet = false,
