@@ -202,9 +202,9 @@ int flv_muxer_aac(struct flv_muxer_t* flv, const void* data, size_t bytes, uint3
 
 	m = 0;
 	audio.codecid = FLV_AUDIO_AAC;
-	audio.rate = FLV_SOUND_RATE_44100; // 44k-SoundRate
+	audio.rate = FLV_SOUND_RATE_11025; // 11k-SoundRate
 	audio.bits = FLV_SOUND_BIT_16; // 16-bit samples
-	audio.channels = FLV_SOUND_CHANNEL_STEREO; // Stereo sound
+	audio.channels = FLV_SOUND_CHANNEL_MONO; // Mono sound
 	if (0 == flv->audio_sequence_header)
 	{
 		flv->audio_sequence_header = 1; // once only

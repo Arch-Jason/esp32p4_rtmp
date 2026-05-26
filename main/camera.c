@@ -83,7 +83,7 @@ esp_h264_enc_out_frame_t enc_frame = {0};
 
 esp_h264_err_t h264_encoder_init() {
     esp_h264_enc_cfg_hw_t enc_cfg = {
-        .gop = 30,
+        .gop = 10,
         .fps = 30,
         .res = {.width = CONFIG_CAM_H, .height = CONFIG_CAM_V},
         .rc = {

@@ -21,6 +21,7 @@ int rtmp_sock = -1;
 
 flv_muxer_t* flv_muxer;
 static struct rtmp_client_handler_t handler;
+SemaphoreHandle_t rtmp_mutex = NULL;
 
 static int on_flv_packet(void* flv, int type, const void* data, size_t bytes, uint32_t timestamp) {
     // 如果 RTMP 还没有握手建立成功，直接丢弃帧，防止阻塞
@@ -187,6 +188,8 @@ void tcp_server_task(void* pvParameters) {
 }
 
 void rtmp_init() {
+    rtmp_mutex = xSemaphoreCreateBinary();
+    xSemaphoreGive(rtmp_mutex);
     memset(&handler, 0, sizeof(handler));
     handler.send = rtmp_client_send;
     flv_muxer = flv_muxer_create(on_flv_packet, NULL);

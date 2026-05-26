@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "camera.h"
+#include "i2s_mic.h"
 #include "rtmp_tcp.h"
 #include "wifi.h"
 
@@ -22,6 +23,9 @@ void app_main(void) {
 
     xTaskCreate(tcp_server_task, "rtmp_client_task", 4096, NULL, 5, NULL);
 
+    if (!i2s_mic_init())
+        ESP_LOGW(TAG, "Mic init failed");
+
     ESP_LOGI(TAG, "Starting camera frame acquisition loop");
 
     // 主循环：获取采集到的 H264 NALU 并推流
@@ -32,8 +36,13 @@ void app_main(void) {
 
         // 只有当 RTMP 握手成功之后，才把 H264 发送给混流器
         if (rtmp_ready && g_rtmp != NULL && len != 0) {
-            flv_muxer_avc(flv_muxer, (const uint8_t*) buf, len, pts, dts);
-            // ESP_LOGI(TAG, "DTS: %u, PTS: %u\r\n", dts, pts);
+            if (xSemaphoreTake(rtmp_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                flv_muxer_avc(flv_muxer, (const uint8_t*) buf, len, pts, dts);
+                // ESP_LOGI(TAG, "DTS: %u, PTS: %u\r\n", dts, pts);
+                xSemaphoreGive(rtmp_mutex);
+            } else {
+                ESP_LOGW(TAG, "Missed frame due to lock timeout");
+            }
         }
 
         vTaskDelay(1);
