@@ -12,3 +12,6 @@ extern rtmp_client_t* g_rtmp;
 extern volatile bool rtmp_ready;
 extern flv_muxer_t* flv_muxer;
 extern SemaphoreHandle_t rtmp_mutex;
+
+uint32_t get_stream_timestamp(void);
+void reset_stream_timestamp(void);

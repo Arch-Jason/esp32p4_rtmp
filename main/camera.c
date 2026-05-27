@@ -16,13 +16,14 @@
 #include <esp_timer.h>
 #include <example_sensor_init.h>
 #include <stdint.h>
+#include "rtmp_tcp.h"
 
 static const char* TAG = "Camera utils";
 
 volatile uint32_t frames_received = 0;
 volatile void* current_frame = NULL;
-SemaphoreHandle_t frame_mutex = NULL;
-volatile uint32_t dts, pts;
+SemaphoreHandle_t frame_sync_sem = NULL;
+volatile bool encoder_busy = false;
 
 
 /**
@@ -57,18 +58,14 @@ bool s_camera_get_finished_trans(esp_cam_ctlr_handle_t handle,
 
     // 尝试获取锁（非阻塞，允许在 ISR/回调 中使用）
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    if (xSemaphoreTakeFromISR(frame_mutex, &xHigherPriorityTaskWoken) == pdTRUE) {
-        // 成功拿到锁，安全更新当前帧
-        current_frame = example_isp_buffer_get_csi_buffer(ctx);
-        // 释放锁
-        xSemaphoreGiveFromISR(frame_mutex, &xHigherPriorityTaskWoken);
+    if (!encoder_busy) {
+        example_isp_buffer_swap(ctx);
+        current_frame = example_isp_buffer_get_dsi_buffer(ctx);
+        encoder_busy = true;
+        xSemaphoreGiveFromISR(frame_sync_sem, &xHigherPriorityTaskWoken);
     } else {
-        // 如果主循环正在用这帧数据，为了安全，这次回调就不更新 current_frame 了
-        ESP_LOGD(TAG, "Frame dropped or skipped because lock was busy");
-        return false;
+        ESP_LOGD(TAG, "Frame dropped because encoder is busy");
     }
-
-    example_isp_buffer_swap(ctx);
 
     // 如果有高优先级任务被唤醒，进行上下文切换
     if (xHigherPriorityTaskWoken) {
@@ -131,10 +128,10 @@ cleanup:
 
 example_pingpong_buffer_ctx_t pp_ctx = {0};
 void camera_init() {
-    // 创建互斥锁
-    frame_mutex = xSemaphoreCreateMutex();
-    if (frame_mutex == NULL) {
-        ESP_LOGE(TAG, "Failed to create frame mutex");
+    // 创建同步信号量
+    frame_sync_sem = xSemaphoreCreateBinary();
+    if (frame_sync_sem == NULL) {
+        ESP_LOGE(TAG, "Failed to create frame sync sem");
         return;
     }
 
@@ -253,17 +250,11 @@ void camera_init() {
 
 uint32_t last_frames_received = 0;
 
-void get_h264_nalu(char** buf, size_t* len, uint32_t* dts, uint32_t* pts) {
+void get_h264_nalu(char** buf, size_t* len, uint32_t* out_dts, uint32_t* out_pts) {
     *buf = NULL;
     *len = 0;
 
-    // 记录推流开始时的系统时间（单位：毫秒）
-    static int64_t start_stream_time = 0;
-
-    if (last_frames_received == frames_received) return;
-
-    if (xSemaphoreTake(frame_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
-        ESP_LOGW(TAG, "Skipped frame because lock timeout");
+    if (xSemaphoreTake(frame_sync_sem, pdMS_TO_TICKS(100)) != pdTRUE) {
         return;
     }
 
@@ -277,18 +268,10 @@ void get_h264_nalu(char** buf, size_t* len, uint32_t* dts, uint32_t* pts) {
             *buf = (char*) enc_frame.raw_data.buffer;
             *len = enc_frame.length;
 
-            int64_t now_ms = esp_timer_get_time() / 1000; // 获取当前微秒并转为毫秒
-            
-            if (start_stream_time == 0) {
-                start_stream_time = now_ms; // 初始化第一帧的起点时间
-            }
+            uint32_t relative_timestamp = get_stream_timestamp();
 
-            // 计算当前帧相对于推流开始过去了多少毫秒
-            uint32_t relative_timestamp = (uint32_t)(now_ms - start_stream_time);
-
-            // H264 编码（无 B 帧的情况下）DTS 和 PTS 是完全相等的
-            *dts = relative_timestamp;
-            *pts = relative_timestamp;
+            *out_dts = relative_timestamp;
+            *out_pts = relative_timestamp;
 
             last_frames_received = frames_received;
         } else {
@@ -296,5 +279,5 @@ void get_h264_nalu(char** buf, size_t* len, uint32_t* dts, uint32_t* pts) {
         }
     }
 
-    xSemaphoreGive(frame_mutex);
+    encoder_busy = false;
 }

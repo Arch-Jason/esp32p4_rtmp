@@ -32,8 +32,6 @@ AACENC_InfoStruct info = {0};
 extern i2c_master_bus_handle_t i2c_bus_handle;
 static i2c_master_dev_handle_t es8311_dev_handle = NULL;
 
-extern volatile uint32_t dts, pts;
-
 static void gpio_init(void) {
     // 配置GPIO48为输出模式
     gpio_config_t io_conf = {
@@ -417,16 +415,17 @@ static void i2s_mic(void* args) {
         //----------------------------------------
 
         if (out_args.numOutBytes > 0) {
+            uint32_t a_pts = get_stream_timestamp();
             if (xSemaphoreTake(rtmp_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-                int r = flv_muxer_aac(flv_muxer, aac_buf, out_args.numOutBytes, pts, dts);
+                int r = flv_muxer_aac(flv_muxer, aac_buf, out_args.numOutBytes, a_pts, a_pts);
                 xSemaphoreGive(rtmp_mutex);
 
                 if (r != 0) {
                     ESP_LOGE(TAG, "flv_muxer_aac failed: %d", r);
                 }
+            } else {
+                ESP_LOGW(TAG, "Missed audio frame due to lock timeout");
             }
-        } else {
-            ESP_LOGW(TAG, "Missed audio frame due to lock timeout");
         }
 
         vTaskDelay(1);

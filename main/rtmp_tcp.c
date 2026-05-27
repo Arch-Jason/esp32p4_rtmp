@@ -3,6 +3,7 @@
 #include "lwip/sockets.h"
 #include "lwip/sys.h"
 #include "lwip/netdb.h"
+#include "esp_timer.h"
 
 #include "libflv/flv-proto.h"
 #include "librtmp/rtmp-client.h"
@@ -22,6 +23,19 @@ int rtmp_sock = -1;
 flv_muxer_t* flv_muxer;
 static struct rtmp_client_handler_t handler;
 SemaphoreHandle_t rtmp_mutex = NULL;
+
+static int64_t start_stream_time = 0;
+
+uint32_t get_stream_timestamp(void) {
+    if (start_stream_time == 0) {
+        start_stream_time = esp_timer_get_time() / 1000;
+    }
+    return (uint32_t)(esp_timer_get_time() / 1000 - start_stream_time);
+}
+
+void reset_stream_timestamp(void) {
+    start_stream_time = esp_timer_get_time() / 1000;
+}
 
 static int on_flv_packet(void* flv, int type, const void* data, size_t bytes, uint32_t timestamp) {
     // 如果 RTMP 还没有握手建立成功，直接丢弃帧，防止阻塞
@@ -124,6 +138,11 @@ void tcp_server_task(void* pvParameters) {
         int yes = 1;
         setsockopt(rtmp_sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
 
+        struct timeval timeout;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 200 * 1000; // 200ms send timeout
+        setsockopt(rtmp_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
         char tcurl[256];
         snprintf(tcurl, sizeof(tcurl), "rtmp://%s/%s", RTMP_SERVER_HOST, RTMP_APP);
 
@@ -168,6 +187,7 @@ void tcp_server_task(void* pvParameters) {
             if (state == 4) { 
                 if (!rtmp_ready) {
                     ESP_LOGI(TAG, "RTMP Handshake & Protocol complete! Ready to stream.");
+                    reset_stream_timestamp();
                     rtmp_ready = true;
                 }
             } else {
