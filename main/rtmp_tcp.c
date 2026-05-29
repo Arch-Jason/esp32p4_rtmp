@@ -1,8 +1,14 @@
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "lwip/err.h"
 #include "lwip/sockets.h"
 #include "lwip/sys.h"
 #include "lwip/netdb.h"
+#include <string.h>
+#include <stdlib.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 
 #include "libflv/flv-proto.h"
 #include "librtmp/rtmp-client.h"
@@ -17,11 +23,33 @@ static const char* TAG = "RTMP_CLIENT";
 
 rtmp_client_t* g_rtmp = NULL;
 volatile bool rtmp_ready = false;
-int rtmp_sock = -1;
+volatile int rtmp_sock = -1;
 
 flv_muxer_t* flv_muxer;
 static struct rtmp_client_handler_t handler;
 SemaphoreHandle_t rtmp_mutex = NULL;
+
+#define RTMP_QUEUE_SIZE 64
+typedef struct {
+    uint8_t *buf;
+    size_t len;
+} rtmp_msg_t;
+
+QueueHandle_t rtmp_queue = NULL;
+
+static int64_t start_stream_time = 0;
+
+uint32_t get_stream_timestamp(void) {
+    if (start_stream_time == 0) {
+        start_stream_time = esp_timer_get_time() / 1000;
+    }
+    return (uint32_t)(esp_timer_get_time() / 1000 - start_stream_time);
+}
+
+void reset_stream_timestamp(void) {
+    start_stream_time = esp_timer_get_time() / 1000;
+}
+
 
 static int on_flv_packet(void* flv, int type, const void* data, size_t bytes, uint32_t timestamp) {
     // 如果 RTMP 还没有握手建立成功，直接丢弃帧，防止阻塞
@@ -45,38 +73,51 @@ static int on_flv_packet(void* flv, int type, const void* data, size_t bytes, ui
     return r;
 }
 
+void rtmp_sender_task(void* pvParameters) {
+    rtmp_msg_t msg;
+    while (1) {
+        if (xQueueReceive(rtmp_queue, &msg, portMAX_DELAY)) {
+            if (rtmp_sock >= 0) {
+                size_t sent = 0;
+                while (sent < msg.len) {
+                    int ret = send(rtmp_sock, (const char*)msg.buf + sent, msg.len - sent, 0);
+                    if (ret <= 0) {
+                        ESP_LOGE(TAG, "Async Send failed! ret=%d, errno=%d", ret, errno);
+                        break; 
+                    }
+                    sent += ret;
+                }
+                // ESP_LOGI(TAG, "Async sent %d bytes", (int)sent);
+            } else {
+                ESP_LOGW(TAG, "Socket not ready, dropping %d bytes", (int)msg.len);
+            }
+            free(msg.buf); // 释放分配的内存
+        }
+    }
+}
+
 int rtmp_client_send(void* param, const void* header, size_t len, const void* data, size_t bytes) {
-    int socket_fd = *(int*)param;
-    if (socket_fd < 0) {
+    size_t total = len + bytes;
+    uint8_t *buffer = (uint8_t*)malloc(total);
+    if (!buffer) {
+        ESP_LOGE(TAG, "Failed to malloc for RTMP packet");
         return -1;
     }
 
-    // 1. 发送头部
-    if (len > 0) {
-        size_t sent = 0;
-        while (sent < len) {
-            int ret = send(socket_fd, (const char*)header + sent, len - sent, 0);
-            if (ret <= 0) {
-                ESP_LOGE(TAG, "Send header failed! ret=%d, errno=%d", ret, errno);
-                return -1;
-            }
-            sent += ret;
-        }
-    }
-    // 2. 发送主体数据
-    if (bytes > 0) {
-        size_t sent = 0;
-        while (sent < bytes) {
-            int ret = send(socket_fd, (const char*)data + sent, bytes - sent, 0);
-            if (ret <= 0) {
-                ESP_LOGE(TAG, "Send data failed! ret=%d, errno=%d", ret, errno);
-                return -1;
-            }
-            sent += ret;
-        }
+    if (header && len > 0) memcpy(buffer, header, len);
+    if (data && bytes > 0) memcpy(buffer + len, data, bytes);
+
+    rtmp_msg_t msg = { .buf = buffer, .len = total };
+    // ESP_LOGI(TAG, "Queuing %d bytes", (int)total);
+
+    // 发送队列，如果队列满则阻塞，或者根据需要调整超时
+    if (xQueueSend(rtmp_queue, &msg, pdMS_TO_TICKS(1000)) != pdPASS) {
+        ESP_LOGE(TAG, "RTMP queue full, dropping packet");
+        free(buffer);
+        return -1;
     }
     
-    return (int)(len + bytes);
+    return (int)total;
 }
 
 void tcp_server_task(void* pvParameters) {
@@ -120,6 +161,7 @@ void tcp_server_task(void* pvParameters) {
             continue;
         }
         ESP_LOGI(TAG, "TCP Connected! Starting RTMP Handshake...");
+        xQueueReset(rtmp_queue);
 
         int yes = 1;
         setsockopt(rtmp_sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
@@ -150,6 +192,7 @@ void tcp_server_task(void* pvParameters) {
         // 网络事件轮询接收循环
         while (1) {
             int len = recv(rtmp_sock, rx_buffer, sizeof(rx_buffer), 0);
+            // if (len > 0) ESP_LOGI(TAG, "Recv %d bytes", len);
             if (len < 0) {
                 ESP_LOGE(TAG, "Recv failed: errno %d", errno);
                 break;
@@ -168,6 +211,7 @@ void tcp_server_task(void* pvParameters) {
             if (state == 4) { 
                 if (!rtmp_ready) {
                     ESP_LOGI(TAG, "RTMP Handshake & Protocol complete! Ready to stream.");
+                    reset_stream_timestamp();
                     rtmp_ready = true;
                 }
             } else {
@@ -177,6 +221,7 @@ void tcp_server_task(void* pvParameters) {
 
         ESP_LOGW(TAG, "RTMP disconnected. Cleaning up and reconnecting...");
         rtmp_ready = false;
+        xQueueReset(rtmp_queue);
         if (g_rtmp) {
             rtmp_client_destroy(g_rtmp);
             g_rtmp = NULL;
@@ -190,6 +235,8 @@ void tcp_server_task(void* pvParameters) {
 void rtmp_init() {
     rtmp_mutex = xSemaphoreCreateBinary();
     xSemaphoreGive(rtmp_mutex);
+    rtmp_queue = xQueueCreate(RTMP_QUEUE_SIZE, sizeof(rtmp_msg_t));
+    xTaskCreate(rtmp_sender_task, "rtmp_sender", 10240, NULL, 10, NULL);
     memset(&handler, 0, sizeof(handler));
     handler.send = rtmp_client_send;
     flv_muxer = flv_muxer_create(on_flv_packet, NULL);

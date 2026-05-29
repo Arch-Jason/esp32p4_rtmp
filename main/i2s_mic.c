@@ -16,13 +16,12 @@
 #include "rtmp_tcp.h"
 #include <freertos/semphr.h>
 
-
-#define EXAMPLE_SAMPLE_RATE     11025 / 2
-#define EXAMPLE_CHANNELS        1
-#define AAC_FRAME_SAMPLES       1024   // AAC-LC 单物理通道一帧固定 1024 采样
+#define EXAMPLE_SAMPLE_RATE 11025 / 2
+#define EXAMPLE_CHANNELS 1
+#define AAC_FRAME_SAMPLES 1024 // AAC-LC 单物理通道一帧固定 1024 采样
 
 // 双声道一帧整的字节数：1024 * 2 通道 * 2 字节 = 4096 字节
-#define EXAMPLE_RECV_BUF_SIZE   (AAC_FRAME_SAMPLES * EXAMPLE_CHANNELS * sizeof(int16_t))
+#define EXAMPLE_RECV_BUF_SIZE (AAC_FRAME_SAMPLES * EXAMPLE_CHANNELS * sizeof(int16_t))
 
 static const char* TAG = "i2s_es8311";
 static i2s_chan_handle_t rx_handle = NULL;
@@ -31,8 +30,6 @@ static const char err_reason[][30] = {"input param is invalid", "operation timeo
 AACENC_InfoStruct info = {0};
 extern i2c_master_bus_handle_t i2c_bus_handle;
 static i2c_master_dev_handle_t es8311_dev_handle = NULL;
-
-extern volatile uint32_t dts, pts;
 
 static void gpio_init(void) {
     // 配置GPIO48为输出模式
@@ -211,7 +208,6 @@ static esp_err_t es8311_codec_init(void) {
                         TAG,
                         "I2C read/write error");
 
-
     /* 5. 串行音频格式配置 (原 es8311_fmt_config 展开，固定为 16-bit 模式) */
     uint8_t reg00;
     ESP_RETURN_ON_ERROR(local_es8311_read_reg(ES8311_RESET_REG00, &reg00),
@@ -255,9 +251,7 @@ static esp_err_t es8311_codec_init(void) {
                         "I2C read/write error"); // 绕过 DAC 均衡器
 
     /* 7. 根据乘数重新计算并设置采样频率 (对应原本的 es8311_sample_frequency_config) */
-    ESP_RETURN_ON_ERROR(local_es8311_sample_frequency_config(16000
-                                                                 * EXAMPLE_MCLK_MULTIPLE,
-                                                             16000),
+    ESP_RETURN_ON_ERROR(local_es8311_sample_frequency_config(16000 * EXAMPLE_MCLK_MULTIPLE, 16000),
                         TAG,
                         "set es8311 sample frequency failed");
 
@@ -417,19 +411,20 @@ static void i2s_mic(void* args) {
         //----------------------------------------
 
         if (out_args.numOutBytes > 0) {
+            uint32_t a_pts = get_stream_timestamp();
             if (xSemaphoreTake(rtmp_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-                int r = flv_muxer_aac(flv_muxer, aac_buf, out_args.numOutBytes, pts, dts);
+                int r = flv_muxer_aac(flv_muxer, aac_buf, out_args.numOutBytes, a_pts, a_pts);
                 xSemaphoreGive(rtmp_mutex);
 
                 if (r != 0) {
                     ESP_LOGE(TAG, "flv_muxer_aac failed: %d", r);
                 }
+            } else {
+                // ESP_LOGW(TAG, "Missed audio frame due to lock timeout");
             }
-        } else {
-            ESP_LOGW(TAG, "Missed audio frame due to lock timeout");
         }
 
-        vTaskDelay(1);
+        // vTaskDelay(1);
     }
 
     free(mic_data);

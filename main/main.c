@@ -21,7 +21,7 @@ void app_main(void) {
     camera_init();
     rtmp_init();
 
-    xTaskCreate(tcp_server_task, "rtmp_client_task", 4096, NULL, 5, NULL);
+    xTaskCreate(tcp_server_task, "rtmp_client_task", 8192, NULL, 5, NULL);
 
     if (!i2s_mic_init())
         ESP_LOGW(TAG, "Mic init failed");
@@ -45,6 +45,6 @@ void app_main(void) {
             }
         }
 
-        vTaskDelay(1);
+        vTaskDelay(30);
     }
 }

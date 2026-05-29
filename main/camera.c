@@ -17,6 +17,8 @@
 #include <example_sensor_init.h>
 #include <stdint.h>
 
+#include "rtmp_tcp.h"
+
 static const char* TAG = "Camera utils";
 
 volatile uint32_t frames_received = 0;
@@ -83,13 +85,13 @@ esp_h264_enc_out_frame_t enc_frame = {0};
 
 esp_h264_err_t h264_encoder_init() {
     esp_h264_enc_cfg_hw_t enc_cfg = {
-        .gop = 6,
+        .gop = 5,
         .fps = 15,
         .res = {.width = CONFIG_CAM_H, .height = CONFIG_CAM_V},
         .rc = {
-            .bitrate = 1500000,
-            .qp_min = 16,
-            .qp_max = 36,
+            .bitrate = 3000000,
+            .qp_min = 36,
+            .qp_max = 46,
         },
         .pic_type = ESP_H264_RAW_FMT_O_UYY_E_VYY,
     };
@@ -277,16 +279,7 @@ void get_h264_nalu(char** buf, size_t* len, uint32_t* dts, uint32_t* pts) {
             *buf = (char*) enc_frame.raw_data.buffer;
             *len = enc_frame.length;
 
-            int64_t now_ms = esp_timer_get_time() / 1000; // 获取当前微秒并转为毫秒
-            
-            if (start_stream_time == 0) {
-                start_stream_time = now_ms; // 初始化第一帧的起点时间
-            }
-
-            // 计算当前帧相对于推流开始过去了多少毫秒
-            uint32_t relative_timestamp = (uint32_t)(now_ms - start_stream_time);
-
-            // H264 编码（无 B 帧的情况下）DTS 和 PTS 是完全相等的
+            uint32_t relative_timestamp = get_stream_timestamp();
             *dts = relative_timestamp;
             *pts = relative_timestamp;
 
